@@ -116,22 +116,28 @@ RC Table::create(const char *name, const char *base_dir, int attribute_count,
   return rc;
 }
 
-RC Table::drop(const char *name) {
-  LOG_INFO("Begin to drop table %s:%s", base_dir_.c_str(), name);
+RC Table::destroy(const char* dir) {
+  //刷新所有脏页
+  RC rc = sync();
+  if(rc != RC::SUCCESS) return rc;
 
-  std::string meta_file = table_meta_file(base_dir_.c_str(), name);
-  std::string data_file = table_data_file(base_dir_.c_str(), name);
-  remove(meta_file.c_str());
-  remove(data_file.c_str());
-
-  // Delete all index files
-  std::string index_file_pattern = index_data_file_pattern(name);
-  std::vector<std::string> index_files;
-  common::list_file(base_dir_.c_str(), index_file_pattern.c_str(), index_files);
-  for (auto &f : index_files) {
-    remove((std::string(base_dir_) + "/" + f).c_str());
+  //TODO 删除描述表元数据的文件
+  if (unlink(table_meta_file(base_dir_.c_str(), table_meta_.name()).c_str()) != 0) {
+    return RC::GENERIC_ERROR;
   }
-  LOG_INFO("Successfully drop table %s:%s", base_dir_.c_str(), name);
+
+  //TODO 删除表数据文件
+  if (unlink(table_data_file(base_dir_.c_str(), table_meta_.name()).c_str()) != 0) {
+    return RC::GENERIC_ERROR;
+  }
+
+  //TODO 清理所有的索引相关文件数据与索引元数据
+  for (auto index : indexes_) {
+    if (unlink(index_data_file(base_dir_.c_str(), table_meta_.name(), index->index_meta().name()).c_str()) != 0) {
+      return RC::GENERIC_ERROR;
+    }
+  }
+
   return RC::SUCCESS;
 }
 

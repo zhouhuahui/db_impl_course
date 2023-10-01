@@ -55,7 +55,7 @@ class Table {
    * 删除一个表
    * @param name 表名
    */
-  RC drop(const char *name);
+  RC destroy(const char* dir);
 
   /**
    * 打开一个表
