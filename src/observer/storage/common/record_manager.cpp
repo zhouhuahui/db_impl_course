@@ -424,8 +424,8 @@ RC RecordFileHandler::insert_record(const char *data, int record_size,
   }
 
   // test
-  LOG_INFO("miniob bpmanager: after inserting record, the elements in lru cache is: ");
-  disk_buffer_pool_->bp_manager_.printLruCache();
+  // LOG_INFO("miniob bpmanager: after inserting record, the elements in lru cache is: ");
+  // disk_buffer_pool_->bp_manager_.printLruCache();
 
   // 找到空闲位置
   RC rc = record_page_handler_.insert_record(data, rid);

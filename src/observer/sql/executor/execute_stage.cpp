@@ -125,7 +125,10 @@ void ExecuteStage::handle_request(common::StageEvent *event) {
 
   switch (sql->flag) {
     case SCF_SELECT: {  // select
-      do_select(current_db, sql, exe_event->sql_event()->session_event());
+      RC rc = do_select(current_db, sql, exe_event->sql_event()->session_event());
+      if (rc != RC::SUCCESS) {
+        session_event->set_response("FAILURE\n");
+      }
       exe_event->done_immediate();
     } break;
 
@@ -198,6 +201,37 @@ void ExecuteStage::handle_request(common::StageEvent *event) {
   }
 }
 
+// 需要满足多表联查条件
+bool match_join_condition(const Tuple *res_tuple,
+                          const std::vector<std::vector<int>> condition_idxs) {
+  // res_tuple 是 需要进行筛选的某一行
+  // condition_idxs 是 C x 3 数组
+  // 每一条的3个元素代表（左值的属性在新schema的下标，CompOp运算符，右值的属性在新schema的下标）
+  //TODO 判断表中某一行 res_tuple 是否满足多表联查条件即：左值=右值
+
+  return true;
+}
+
+// 将多段小元组合成一个大元组
+Tuple merge_tuples(
+    const std::vector<std::vector<Tuple>::const_iterator> temp_tuples,
+    std::vector<int> orders) {
+  std::vector<std::shared_ptr<TupleValue>> temp_res;
+  Tuple res_tuple;
+  //TODO 先把每个字段都放到对应的位置上(temp_res)
+  //TODO 再依次(orders)添加到大元组(res_tuple)里即可
+}
+
+
+// 将多段小元组合成一个大元组
+Tuple merge_tuples(
+    const std::vector<std::vector<Tuple>::const_iterator> temp_tuples) {
+  std::vector<std::shared_ptr<TupleValue>> temp_res;
+  Tuple res_tuple;
+  //TODO 先把每个字段都放到对应的位置上(temp_res)
+  //TODO 再依次(orders)添加到大元组(res_tuple)里即可
+}
+
 void end_trx_if_need(Session *session, Trx *trx, bool all_right) {
   if (!session->is_trx_multi_operation_mode()) {
     if (all_right) {
@@ -211,7 +245,7 @@ void end_trx_if_need(Session *session, Trx *trx, bool all_right) {
 // 这里没有对输入的某些信息做合法性校验，比如查询的列名、where条件中的列名等，没有做必要的合法性校验
 // 需要补充上这一部分.
 // 校验部分也可以放在resolve，不过跟execution放一起也没有关系
-RC ExecuteStage::do_select(const char *db, Query *sql,
+RC ExecuteStage::do_select(const char *db, const Query *sql,
                            SessionEvent *session_event) {
   RC rc = RC::SUCCESS;
   Session *session = session_event->get_client()->session;
@@ -256,8 +290,53 @@ RC ExecuteStage::do_select(const char *db, Query *sql,
   }
 
   std::stringstream ss;
+  TupleSet print_tuples;
   if (tuple_sets.size() > 1) {
     // 本次查询了多张表，需要做join操作
+    TupleSchema join_schema;
+    TupleSchema old_schema;
+    for (std::vector<TupleSet>::const_reverse_iterator
+                 rit = tuple_sets.rbegin(),
+                 rend = tuple_sets.rend();
+         rit != rend; ++rit) {
+      // 这里是某张表投影完的所有字段，如果是select * from t1,t2;
+      // old_schema=[t1.a, t1.b, t2.a, t2.b]
+      old_schema.append(rit->get_schema());
+    }
+
+    std::vector<int> select_order;
+    //TODO 根据列名输出顺序，添加 old_schema 对应字段到 join_schema 中，并构建select_order数组
+    // 如果是select * ，添加所有字段
+    // 如果是select t1.*，表名匹配的加入字段
+    // 如果是select t1.age，表名+字段名匹配的加入字段
+    print_tuples.set_schema(join_schema);
+
+    // 构建联查的conditions需要找到对应的表
+    // C x 3 数组
+    // 每一条的3个元素代表（左值的属性在新schema的下标，CompOp运算符，右值的属性在新schema的下标）
+    std::vector<std::vector<int>> condition_idxs;
+    for (size_t i = 0; i < selects.condition_num; i++) {
+      const Condition &condition = selects.conditions[i];
+      if (condition.left_is_attr == 1 &&
+          condition.right_is_attr == 1) {
+        std::vector<int> temp_con;
+        const char *l_table_name = condition.left_attr.relation_name;
+        const char *l_field_name = condition.left_attr.attribute_name;
+        const CompOp comp = condition.comp;
+        const char *r_table_name = condition.right_attr.relation_name;
+        const char *r_field_name = condition.right_attr.attribute_name;
+        temp_con.push_back(print_tuples.get_schema().index_of_field(
+                l_table_name, l_field_name));
+        temp_con.push_back(comp);
+        temp_con.push_back(print_tuples.get_schema().index_of_field(
+                r_table_name, r_field_name));
+        condition_idxs.push_back(temp_con);
+      }
+    }
+    //TODO 元组的拼接需要实现笛卡尔积
+    //TODO 将符合连接条件的元组添加到print_tables中
+
+    print_tuples.print(ss);
   } else {
     // 当前只查询一张表，直接返回结果即可
     tuple_sets.front().print(ss);
@@ -297,32 +376,82 @@ static RC schema_add_field(Table *table, const char *field_name,
 RC create_selection_executor(Trx *trx, const Selects &selects, const char *db,
                              const char *table_name,
                              SelectExeNode &select_node) {
+  Table *table;
+
+  // attribute tables check
+  for (size_t i = 0; i < selects.attr_num; i++) {
+    if (selects.attributes[i].relation_name == nullptr) {
+      continue;
+    }
+    table = DefaultHandler::get_default().find_table(
+        db, selects.attributes[i].relation_name);
+    if (nullptr == table) {
+      LOG_WARN("No such table [%s] in db [%s]",
+               selects.attributes[i].relation_name, db);
+      return RC::SCHEMA_TABLE_NOT_EXIST;
+    }
+  }
+
+  // condition tables check
+  for (size_t i = 0; i < selects.condition_num; i++) {
+    if (selects.conditions[i].left_is_attr == 1) {
+      if (selects.conditions[i].left_attr.relation_name == nullptr) {
+        continue;
+      }
+      table = DefaultHandler::get_default().find_table(
+          db, selects.conditions[i].left_attr.relation_name);
+      if (nullptr == table) {
+        LOG_WARN("No such table [%s] in db [%s]",
+                 selects.conditions[i].left_attr.relation_name, db);
+        return RC::SCHEMA_TABLE_NOT_EXIST;
+      }
+    }
+    if (selects.conditions[i].left_is_attr == 1) {
+      if (selects.conditions[i].right_attr.relation_name == nullptr) {
+        continue;
+      }
+      table = DefaultHandler::get_default().find_table(
+          db, selects.conditions[i].right_attr.relation_name);
+      if (nullptr == table) {
+        LOG_WARN("No such table [%s] in db [%s]",
+                 selects.conditions[i].right_attr.relation_name, db);
+        return RC::SCHEMA_TABLE_NOT_EXIST;
+      }
+    }
+  }
+  
   // 列出跟这张表关联的Attr
   TupleSchema schema;
-  Table *table = DefaultHandler::get_default().find_table(db, table_name);
+  table = DefaultHandler::get_default().find_table(db, table_name);
   if (nullptr == table) {
     LOG_WARN("No such table [%s] in db [%s]", table_name, db);
     return RC::SCHEMA_TABLE_NOT_EXIST;
   }
-
-  for (int i = selects.attr_num - 1; i >= 0; i--) {
-    const RelAttr &attr = selects.attributes[i];
-    if (nullptr == attr.relation_name ||
-        0 == strcmp(table_name, attr.relation_name)) {
-      if (0 == strcmp("*", attr.attribute_name)) {
-        // 列出这张表所有字段
-        TupleSchema::from_table(table, schema);
-        break;  // 没有校验，给出* 之后，再写字段的错误
-      } else {
-        // 列出这张表相关字段
-        RC rc = schema_add_field(table, attr.attribute_name, schema);
-        if (rc != RC::SUCCESS) {
-          return rc;
+  
+  //如果是聚合函数：count/min/max/avg(PARAMETER)，直接select PARAMETER
+  if (selects.aggregation_num > 0 && selects.attr_num == 0) {
+    //TODO
+  } else {  // 正常的投影操作
+    for (int i = selects.attr_num - 1; i >= 0; i--) {
+      const RelAttr &attr = selects.attributes[i];
+      if (nullptr == attr.relation_name ||
+          0 == strcmp(table_name, attr.relation_name)) {
+        if (0 == strcmp("*", attr.attribute_name)) {
+          // 列出这张表所有字段
+          TupleSchema::from_table(table, schema);
+          break;  // 没有校验，给出* 之后，再写字段的错误
+        } else {
+          // 列出这张表相关字段
+          RC rc = schema_add_field(table, attr.attribute_name, schema);
+          if (rc != RC::SUCCESS) {
+            return rc;
+          }
         }
       }
     }
+    // condition中的涉及的列也要加入到schema中
   }
-
+  
   // 找出仅与此表相关的过滤条件, 或者都是值的过滤条件
   std::vector<DefaultConditionFilter *> condition_filters;
   for (size_t i = 0; i < selects.condition_num; i++) {
@@ -350,6 +479,20 @@ RC create_selection_executor(Trx *trx, const Selects &selects, const char *db,
         return rc;
       }
       condition_filters.push_back(condition_filter);
+    } else if (condition.left_is_attr == 1 && condition.right_is_attr == 1 &&
+              (match_table(selects, condition.left_attr.relation_name, table_name) || match_table(selects, condition.right_attr.relation_name, table_name))
+    ) {
+      if (match_table(selects, condition.left_attr.relation_name, table_name)) {
+        RC rc = schema_add_field(table, condition.left_attr.relation_name, schema);
+        if (rc != RC::SUCCESS) {
+          return rc;
+        }
+      } else if (match_table(selects, condition.right_attr.relation_name, table_name)) {
+        RC rc = schema_add_field(table, condition.right_attr.relation_name, schema);
+        if (rc != RC::SUCCESS) {
+          return rc;
+        }
+      }
     }
   }
 

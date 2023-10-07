@@ -35,7 +35,7 @@ typedef std::pair<int, PageNum> BufferTag;
 #define BP_PAGE_SIZE (1 << 12)
 #define BP_PAGE_DATA_SIZE (BP_PAGE_SIZE - sizeof(PageNum))
 #define BP_FILE_SUB_HDR_SIZE (sizeof(BPFileSubHeader))
-#define BP_BUFFER_SIZE 8
+#define BP_BUFFER_SIZE 10000
 #define MAX_OPEN_FILE 1024
 
 typedef struct {
