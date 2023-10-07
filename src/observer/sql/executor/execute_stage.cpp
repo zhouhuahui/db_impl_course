@@ -298,7 +298,7 @@ RC ExecuteStage::do_select(const char *db, const Query *sql,
   const Selects &selects = sql->sstr.selection;
   // 把所有的表和只跟这张表关联的condition都拿出来，生成最底层的select 执行节点
   std::vector<SelectExeNode *> select_nodes;
-  for (size_t i = 0; i < selects.relation_num; i++) {
+  for (int i = selects.relation_num - 1; i >= 0; i--) {
     const char *table_name = selects.relations[i];
     SelectExeNode *select_node = new SelectExeNode;
     rc = create_selection_executor(trx, selects, db, table_name, *select_node);
@@ -340,9 +340,9 @@ RC ExecuteStage::do_select(const char *db, const Query *sql,
     // 本次查询了多张表，需要做join操作
     TupleSchema join_schema;
     TupleSchema old_schema;
-    for (std::vector<TupleSet>::const_reverse_iterator
-                 rit = tuple_sets.rbegin(),
-                 rend = tuple_sets.rend();
+    for (std::vector<TupleSet>::iterator
+                 rit = tuple_sets.begin(),
+                 rend = tuple_sets.end();
          rit != rend; ++rit) {
       // 这里是某张表投影完的所有字段，如果是select * from t1,t2;
       // old_schema=[t1.a, t1.b, t2.a, t2.b]
@@ -355,13 +355,13 @@ RC ExecuteStage::do_select(const char *db, const Query *sql,
     // 如果是select t1.*，表名匹配的加入字段
     // 如果是select t1.age，表名+字段名匹配的加入字段
     if (selects.attr_num == 1 && 
-        selects.attributes[0].relation_name != nullptr && 
+        selects.attributes[0].relation_name == nullptr && 
         strcmp(selects.attributes[0].attribute_name, "*") == 0) {
       join_schema.append(old_schema);
       for (size_t i = 0; i < old_schema.fields().size(); ++i) select_order.push_back(i);
     } else {
       std::map<std::string, std::set<std::string>> considered_attrs;
-      for (size_t i = selects.attr_num - 1; i >= 0; --i) {
+      for (int i = selects.attr_num - 1; i >= 0; --i) {
         auto& attr = selects.attributes[i];
         bool found = false;
         if (attr.relation_name == nullptr) {
@@ -424,10 +424,10 @@ RC ExecuteStage::do_select(const char *db, const Query *sql,
         const CompOp comp = condition.comp;
         const char *r_table_name = condition.right_attr.relation_name;
         const char *r_field_name = condition.right_attr.attribute_name;
-        temp_con.push_back(print_tuples.get_schema().index_of_field(
+        temp_con.push_back(old_schema.index_of_field(
                 l_table_name, l_field_name));
         temp_con.push_back(comp);
-        temp_con.push_back(print_tuples.get_schema().index_of_field(
+        temp_con.push_back(old_schema.index_of_field(
                 r_table_name, r_field_name));
         condition_idxs.push_back(temp_con);
       }
@@ -443,6 +443,9 @@ RC ExecuteStage::do_select(const char *db, const Query *sql,
           } else {
             break;
           }
+        }
+        if (tmp_tuples.size() < tuple_sets.size()) {
+          break;
         }
         Tuple res_tuple = merge_tuples(tmp_tuples);
         if (match_join_condition(&res_tuple, condition_idxs)) {
@@ -536,7 +539,7 @@ RC create_selection_executor(Trx *trx, const Selects &selects, const char *db,
         return RC::SCHEMA_TABLE_NOT_EXIST;
       }
     }
-    if (selects.conditions[i].left_is_attr == 1) {
+    if (selects.conditions[i].right_is_attr == 1) {
       if (selects.conditions[i].right_attr.relation_name == nullptr) {
         continue;
       }
@@ -613,12 +616,12 @@ RC create_selection_executor(Trx *trx, const Selects &selects, const char *db,
               (match_table(selects, condition.left_attr.relation_name, table_name) || match_table(selects, condition.right_attr.relation_name, table_name))
     ) {
       if (match_table(selects, condition.left_attr.relation_name, table_name)) {
-        RC rc = schema_add_field(table, condition.left_attr.relation_name, schema);
+        RC rc = schema_add_field(table, condition.left_attr.attribute_name, schema);
         if (rc != RC::SUCCESS) {
           return rc;
         }
       } else if (match_table(selects, condition.right_attr.relation_name, table_name)) {
-        RC rc = schema_add_field(table, condition.right_attr.relation_name, schema);
+        RC rc = schema_add_field(table, condition.right_attr.attribute_name, schema);
         if (rc != RC::SUCCESS) {
           return rc;
         }
