@@ -38,6 +38,14 @@ typedef enum {
   NO_OP
 } CompOp;
 
+typedef enum {
+  AGG_MAX,    // max 0
+  AGG_MIN,    // min 1
+  AGG_COUNT,  // count 2
+  AGG_AVG,    // avg 3
+  AGG_SUM,    // sum 4
+} FuncName;
+
 //属性值类型
 typedef enum { UNDEFINED, CHARS, INTS, FLOATS } AttrType;
 
@@ -46,6 +54,14 @@ typedef struct _Value {
   AttrType type;  // type of value
   void *data;     // value
 } Value;
+
+typedef struct {
+  FuncName func_name;  //聚合函数的名称
+  RelAttr attribute;   //聚合的属性
+  // std::string expression_str;  //TODO: 括号内表达式的字符串
+  int is_value;  //表达式是确定的值吗 0=不是 1=是
+  Value *value;  //表达式的值
+} Aggregation;   //聚合函数
 
 typedef struct _Condition {
   int left_is_attr;  // TRUE if left-hand side is an attribute
@@ -68,6 +84,8 @@ typedef struct {
   char *relations[MAX_NUM];       // relations in From clause
   size_t condition_num;           // Length of conditions in Where clause
   Condition conditions[MAX_NUM];  // conditions in Where clause
+  size_t aggregation_num;
+  Aggregation aggregations[MAX_NUM];
 } Selects;
 
 // struct of insert
@@ -209,6 +227,13 @@ void selects_append_relation(Selects *selects, const char *relation_name);
 
 void selects_append_conditions(Selects *selects, Condition conditions[],
                                size_t condition_num);
+
+void selects_append_aggregation_attr(Selects *selects, FuncName func_name,
+                                     RelAttr *rel_attr);
+
+void selects_append_aggregation_value(Selects *selects, FuncName func_name,
+                                      Value *value);
+
 
 void selects_destroy(Selects *selects);
 
